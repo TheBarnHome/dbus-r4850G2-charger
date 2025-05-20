@@ -61,7 +61,7 @@ class DbusR4850Service(object):
         self._queued_updates = []
         
         # Create the services
-        self._dbuscharger = VeDbusService(f'com.victronenergy.charger.r4850.{deviceinstance}', bus=dbusconnection(), register=False)
+        self._dbuscharger = VeDbusService(f'com.victronenergy.charger.r4850', bus=dbusconnection(), register=False)
 
         # Set up default paths
         self.setupChargerDefaultPaths(self._dbuscharger, connection, deviceinstance, f"Charger {productname}")
