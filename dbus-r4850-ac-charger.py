@@ -121,13 +121,14 @@ class DbusR4850Service(object):
 
         battery_service = find_battery_service()
 
-        
-
         if battery_service:
             battery_voltage = VeDbusItemImport(dbusconnection(), battery_service, '/Dc/0/Voltage')
-        
+            battery_current = VeDbusItemImport(dbusconnection(), battery_service, '/Dc/0/Current')
+
             with self._dbuscharger as c:
                 c['/Dc/0/Voltage'] = round(battery_voltage.get_value(), 1)
+                if battery_current > 0:
+                    c['/Dc/0/Current'] = c['/Dc/0/Current'] + 1
 
     def _change(self, path, value):
         global mainloop
