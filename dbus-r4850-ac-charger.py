@@ -163,10 +163,9 @@ class DbusR4850Service(object):
                     logging.WARNING('/Relay/0/State set to 1')
                     adjust_charge_current(c, battery_voltage.get_value())
         
-        with self._dbuscharger as c:
-            for path in c:
-                value = self._dbuscharger[path].value
-                mqtt_pub.publish_sensor(path, value)
+        for path in self._dbuscharger:
+            value = self._dbuscharger[path].value
+            mqtt_pub.publish_sensor(path, value)
 
         self._updateInternal()
         return True
