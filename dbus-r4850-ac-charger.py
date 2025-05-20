@@ -30,6 +30,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), 'velib_python'))
 from vedbus import VeDbusService, VeDbusItemExport, VeDbusItemImport
 
+mqtt_pub = None
+
 def find_battery_service():
     bus = dbus.SystemBus()
     om = bus.get_object('org.freedesktop.DBus', '/org/freedesktop/DBus')
@@ -147,6 +149,8 @@ class DbusR4850Service(object):
 
     def _update(self):
         global mainloop
+        global mqtt_pub
+
         logging.info("{} updating".format(datetime.datetime.now().time()))
 
         battery_service = find_battery_service()
@@ -225,6 +229,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--can","-c", required=True, type=str)
     global args
+    global mqtt_pub
+
     args = parser.parse_args()
 
     from dbus.mainloop.glib import DBusGMainLoop
