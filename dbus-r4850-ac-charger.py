@@ -66,9 +66,6 @@ class DbusR4850Service(object):
         # Set up default paths
         self.setupChargerDefaultPaths(self._dbuscharger, connection, deviceinstance, f"Charger {productname}")
 
-        # Get battery
-        print(find_battery_service())
-
         # Create paths for charger
         # general data
         self._dbuscharger.add_path('/Ac/In/L1/I', 0)
@@ -121,6 +118,16 @@ class DbusR4850Service(object):
     def _update(self):
         global mainloop
         logging.info("{} updating".format(datetime.datetime.now().time()))
+
+        battery_service = find_battery_service()
+
+        
+
+        if battery_service:
+            battery_voltage = VeDbusItemImport(dbusconnection(), battery_service, '/DC/0/Voltage')
+        
+            with self._dbuscharger as c:
+                c['/Dc/0/Voltage'] = battery_voltage
 
     def _change(self, path, value):
         global mainloop
