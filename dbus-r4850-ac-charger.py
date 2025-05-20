@@ -44,6 +44,35 @@ def find_battery_service():
 def isNaN(num):
     return num != num
 
+def adjust_charge_current(c, battery_current):
+    """
+    Adjusts the charge current setpoint in c['/Dc/0/Current'] to compensate battery discharge.
+
+    Parameters:
+    - c: dict-like object containing the '/Dc/0/Current' setpoint (integer)
+    - battery_current: object with get_value() returning current battery current (float),
+                      negative when discharging, positive when charging.
+
+    The function accumulates compensation when discharge continues,
+    favors a slight charge over discharge,
+    and gradually reduces charge when battery is not discharging.
+    """
+
+    measured_current = battery_current.get_value()  # measured current (negative = discharging)
+    current_setpoint = c.get('/Dc/0/Current', 0)    # current charge setpoint (int)
+
+    if measured_current < 0:
+        # Battery discharging: increase compensation by adding absolute discharge current
+        # Round up fractional values to ensure slight overcompensation
+        discharge_to_compensate = int(abs(measured_current)) + (1 if abs(measured_current) % 1 > 0 else 0)
+
+        # Add discharge to current compensation setpoint
+        new_setpoint = current_setpoint + discharge_to_compensate
+    else:
+        # Battery charging or neutral: decrease compensation gradually to avoid oscillations
+        new_setpoint = max(0, current_setpoint - 1)
+
+    c['/Dc/0/Current'] = new_setpoint
 
 # Allow to have multiple DBUS connections
 class SystemBus(dbus.bus.BusConnection):
@@ -80,6 +109,7 @@ class DbusR4850Service(object):
         self._dbuscharger.add_path('/ErrorCode', 0)
         self._dbuscharger.add_path('/Alarms/LowVoltage', 0)
         self._dbuscharger.add_path('/Alarms/HighVoltage', 0)
+        self._dbuscharger.add_path('/Relay/0/State')
 
         logging.info(f"Paths for 'accharger' created.")
 
@@ -126,9 +156,9 @@ class DbusR4850Service(object):
             battery_current = VeDbusItemImport(dbusconnection(), battery_service, '/Dc/0/Current')
 
             with self._dbuscharger as c:
-                c['/Dc/0/Voltage'] = round(battery_voltage.get_value(), 1)
-                if battery_current.get_value() > 0:
-                    c['/Dc/0/Current'] = c['/Dc/0/Current'] + 1
+                if c['/Relay/0/State'] = 1:
+                    logging.WARNING('/Relay/0/State set to 1')
+                    adjust_charge_current(c, battery_voltage.get_value())
 
     def _change(self, path, value):
         global mainloop
