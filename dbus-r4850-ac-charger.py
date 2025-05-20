@@ -117,7 +117,7 @@ class DbusR4850Service(object):
 
         logging.info(f'Added to D-Bus: {self._dbuscharger}')
 
-        GLib.timeout_add(10000, self._update)
+        GLib.timeout_add(3000, self._update)
 
     def setupChargerDefaultPaths(self, service, connection, deviceinstance, productname):
         # Create the management objects, as specified in the ccgx dbus-api document
@@ -156,6 +156,7 @@ class DbusR4850Service(object):
             battery_current = VeDbusItemImport(dbusconnection(), battery_service, '/Dc/0/Current')
 
             with self._dbuscharger as c:
+                c['Dc/0/Voltage'] = battery_voltage.get_value()
                 if c['/Relay/0/State'] == 1:
                     logging.WARNING('/Relay/0/State set to 1')
                     adjust_charge_current(c, battery_voltage.get_value())
