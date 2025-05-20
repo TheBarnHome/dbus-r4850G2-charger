@@ -127,7 +127,7 @@ class DbusR4850Service(object):
 
             with self._dbuscharger as c:
                 c['/Dc/0/Voltage'] = round(battery_voltage.get_value(), 1)
-                if battery_current > 0:
+                if battery_current.get_value() > 0:
                     c['/Dc/0/Current'] = c['/Dc/0/Current'] + 1
 
     def _change(self, path, value):
