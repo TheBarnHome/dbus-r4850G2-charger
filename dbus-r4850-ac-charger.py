@@ -19,7 +19,7 @@ import dbus
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 # our own packages
-# sys.path.insert(1, os.path.join(os.path.dirname(__file__), '../'))
+sys.path.insert(1, os.path.join(os.path.dirname(__file__), '../'))
 from vedbus import VeDbusService
 
 def find_battery_service():
