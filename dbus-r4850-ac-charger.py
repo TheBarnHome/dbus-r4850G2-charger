@@ -165,7 +165,8 @@ class DbusR4850Service(object):
         
         with self._dbuscharger as c:
             logging.info(c)
-            for path, value, in c:
+            for path in c._dbusobjects:
+                value = c[path].get_value()
                 mqtt_pub.publish_sensor(path, value)
 
         self._updateInternal()
