@@ -18,9 +18,9 @@ import dbus
 
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-# our own packages
-sys.path.insert(1, os.path.join(os.path.dirname(__file__), '../'))
-from vedbus import VeDbusService
+# import Victron Energy packages
+sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext", "velib_python"))
+from vedbus import VeDbusService  # noqa: E402
 
 def find_battery_service():
     bus = dbus.SystemBus()
