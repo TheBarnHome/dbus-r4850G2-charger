@@ -66,6 +66,9 @@ class DbusR4850Service(object):
         # Set up default paths
         self.setupChargerDefaultPaths(self._dbuscharger, connection, deviceinstance, f"Charger {productname}")
 
+        # Get battery
+        print(find_battery_service())
+
         # Create paths for charger
         # general data
         self._dbuscharger.add_path('/Ac/In/L1/I', 0)
