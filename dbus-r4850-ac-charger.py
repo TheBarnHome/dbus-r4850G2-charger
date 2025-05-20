@@ -87,7 +87,7 @@ class DbusR4850Service(object):
 
         logging.info(f'Added to D-Bus: {self._dbuscharger}')
 
-        GLib.timeout_add(self.updateInterval, self._update)
+        GLib.timeout_add(10000, self._update)
 
     def setupChargerDefaultPaths(self, service, connection, deviceinstance, productname):
         # Create the management objects, as specified in the ccgx dbus-api document
