@@ -164,13 +164,12 @@ class DbusR4850Service(object):
                     adjust_charge_current(c, battery_voltage.get_value())
         
         for path, item in self._dbuscharger._dbusobjects.items():
-            try:
-                logging.info(path)
-                logging.info(item)
-                value = item.get_value()
-                mqtt_pub.publish_sensor(path, value)
-            except Exception as e:
-                logging.warning(f"Failed to publish {path}: {e}")
+            with self._dbuscharger as c:
+                try:
+                    value = c[path].get_value()
+                    mqtt_pub.publish_sensor(path, value)
+                except Exception as e:
+                    logging.warning(f"Failed to publish {path}: {e}")
 
         self._updateInternal()
         return True
