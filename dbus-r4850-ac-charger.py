@@ -164,6 +164,7 @@ class DbusR4850Service(object):
                     adjust_charge_current(c, battery_voltage.get_value())
         
         for path in self._dbuscharger:
+            logging.info(path)
             value = self._dbuscharger[path].value
             mqtt_pub.publish_sensor(path, value)
 
