@@ -22,7 +22,7 @@ import subprocess
 import time
 import atexit
 import concurrent.futures
-from inverterd import Client, Format
+import paho.mqtt.client as mqtt
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
@@ -163,6 +163,11 @@ class DbusR4850Service(object):
                     logging.WARNING('/Relay/0/State set to 1')
                     adjust_charge_current(c, battery_voltage.get_value())
         
+        with self._dbuscharger as c:
+            for path in c:
+                value = self._dbuscharger[path].value
+                mqtt_pub.publish_sensor(path, value)
+
         self._updateInternal()
         return True
 
@@ -173,6 +178,45 @@ class DbusR4850Service(object):
             logging.info("Restarting!")
             mainloop.quit()
             exit
+
+def slugify(path):
+    return path.strip('/').replace('/', '_').replace(' ', '_')
+
+class MqttPublisher:
+    def __init__(self, client_id='r4850g2', host='localhost', port=1883, base_topic='homeassistant'):
+        self.client = mqtt.Client(client_id)
+        self.client.connect(host, port, 60)
+        self.base_topic = base_topic
+        self.device_id = client_id
+        self.client.loop_start()
+
+    def publish_sensor(self, path, value, unit=None, device_class=None, state_class=None):
+        sensor_id = slugify(path)
+        state_topic = f"{self.base_topic}/sensor/{self.device_id}/{sensor_id}/state"
+        config_topic = f"{self.base_topic}/sensor/{self.device_id}/{sensor_id}/config"
+
+        config_payload = {
+            "name": f"R4850G2 {sensor_id}",
+            "state_topic": state_topic,
+            "unique_id": f"{self.device_id}_{sensor_id}",
+            "device": {
+                "identifiers": [self.device_id],
+                "name": "Huawei R4850G2 Charger",
+                "model": "R4850G2",
+                "manufacturer": "Huawei"
+            }
+        }
+
+        if unit: config_payload["unit_of_measurement"] = unit
+        if device_class: config_payload["device_class"] = device_class
+        if state_class: config_payload["state_class"] = state_class
+
+        self.client.publish(config_topic, json.dumps(config_payload), retain=True)
+        self.client.publish(state_topic, str(value), retain=True)
+
+    def stop(self):
+        self.client.loop_stop()
+        self.client.disconnect()
 
 def main():
     parser = argparse.ArgumentParser()
@@ -185,6 +229,8 @@ def main():
     DBusGMainLoop(set_as_default=True)
 
     mppservice = DbusR4850Service()
+    mqtt_pub = MqttPublisher(host='192.168.10.100')
+
     logging.info('Created service & connected to dbus, switching over to GLib.MainLoop() (= event based)')
 
     global mainloop
