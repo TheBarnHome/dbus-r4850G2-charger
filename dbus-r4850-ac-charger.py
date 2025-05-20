@@ -101,7 +101,7 @@ class DbusR4850Service(object):
         self._dbuscharger.add_path('/Ac/In/L1/P', 100)
         self._dbuscharger.add_path('/Ac/In/CurrentLimit', 16)
         self._dbuscharger.add_path('/NrOfOutputs', 1)
-        self._dbuscharger.add_path('/DC/0/Temperature', 123)
+        self._dbuscharger.add_path('/Dc/0/Temperature', 123)
         self._dbuscharger.add_path('/Dc/0/Voltage', 0)
         self._dbuscharger.add_path('/Dc/0/Current', 0)
         self._dbuscharger.add_path('/State', 3)
