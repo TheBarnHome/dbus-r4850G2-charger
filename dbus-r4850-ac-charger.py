@@ -156,7 +156,7 @@ class DbusR4850Service(object):
             battery_current = VeDbusItemImport(dbusconnection(), battery_service, '/Dc/0/Current')
 
             with self._dbuscharger as c:
-                if c['/Relay/0/State'] = 1:
+                if c['/Relay/0/State'] == 1:
                     logging.WARNING('/Relay/0/State set to 1')
                     adjust_charge_current(c, battery_voltage.get_value())
 
