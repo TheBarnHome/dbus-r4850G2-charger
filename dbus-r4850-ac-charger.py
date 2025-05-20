@@ -109,7 +109,7 @@ class DbusR4850Service(object):
         self._dbuscharger.add_path('/ErrorCode', 0)
         self._dbuscharger.add_path('/Alarms/LowVoltage', 0)
         self._dbuscharger.add_path('/Alarms/HighVoltage', 0)
-        self._dbuscharger.add_path('/Relay/0/State')
+        self._dbuscharger.add_path('/Relay/0/State', 0)
 
         logging.info(f"Paths for 'accharger' created.")
 
