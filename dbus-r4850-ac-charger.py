@@ -85,7 +85,7 @@ def dbusconnection():
     return SessionBus() if 'DBUS_SESSION_BUS_ADDRESS' in os.environ else SystemBus()
 
 class DbusR4850Service(object):
-    def __init__(self, productname='R4850G2', connection='Huawei R4850G2 interface', deviceinstance=0):
+    def __init__(self, productname='R4850G2', connection='Huawei R4850G2 interface', deviceinstance=10):
 
         self._queued_updates = []
         
