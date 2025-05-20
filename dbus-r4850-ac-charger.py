@@ -127,7 +127,7 @@ class DbusR4850Service(object):
             battery_voltage = VeDbusItemImport(dbusconnection(), battery_service, '/DC/0/Voltage')
         
             with self._dbuscharger as c:
-                c['/Dc/0/Voltage'] = battery_voltage.get_value()
+                c['/Dc/0/Voltage'] = round(battery_voltage.get_value(), 1)
 
     def _change(self, path, value):
         global mainloop
