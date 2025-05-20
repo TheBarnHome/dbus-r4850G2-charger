@@ -165,7 +165,8 @@ class DbusR4850Service(object):
         
         for path, item in self._dbuscharger._dbusobjects.items():
             try:
-                value = item.value
+                logging.info('{path}, {item}')
+                value = item.get_value()
                 mqtt_pub.publish_sensor(path, value)
             except Exception as e:
                 logging.warning(f"Failed to publish {path}: {e}")
