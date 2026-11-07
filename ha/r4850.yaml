@@ -1,0 +1,154 @@
+# Chargeur Huawei R4850G2 — package Home Assistant
+#
+# Driver : dbus-r4850G2-charger (D-Bus com.victronenergy.charger.huawei-r4850g2.<serial>)
+# Lecture/écriture : Modbus TCP du GX (192.168.20.245:502)
+#
+# L'unit ID Modbus est le /DeviceInstance du service :
+#   10  = chargeur réel      (valeur par défaut du driver)
+#   11  = instance de test   (install.sh --test, module virtuel)
+# Les blocs ci-dessous pointent sur 11 ; passer à 10 quand le module sera câblé.
+#
+# Le registre 2317 (/Mode) est la vue on/off standard Victron : 0 = arrêt,
+# 1 = marche. La table Modbus du type `charger` ne décrit que ce registre-là et
+# le 2316 ; le mode à trois états n'a pas de registre propre. C'est donc HA qui
+# le tient, et le driver reçoit 0 / 1 / 2 :
+#   0 -> off (registre standby du module), 1 -> dernier mode actif, 2 -> recharge
+# On ne publie jamais 2 dans /Mode : aucun client Victron ne voit de valeur hors
+# norme, et VRM n'affiche pas de faux état d'erreur.
+
+modbus:
+  - name: gx
+    type: tcp
+    host: 192.168.20.245
+    port: 502
+    delay: 2
+    timeout: 3
+
+    numbers:
+      - name: "R4850 limite AC"
+        unique_id: r4850_ac_limit
+        slave: 11
+        address: 2316
+        input_type: holding
+        min: 0
+        max: 63
+        step: 0.5
+        scale: 0.1
+        precision: 1
+        unit_of_measurement: A
+        device_class: current
+        # plafond AC, converti côté driver en plafond DC :
+        # I_dc = I_ac * 230 * 0.93 / V_batterie
+
+    sensors:
+      - name: "R4850 tension sortie"
+        unique_id: r4850_dc_voltage
+        slave: 11
+        address: 2307
+        input_type: holding
+        scale: 0.01
+        precision: 2
+        unit_of_measurement: V
+        device_class: voltage
+        state_class: measurement
+      - name: "R4850 courant sortie"
+        unique_id: r4850_dc_current
+        slave: 11
+        address: 2308
+        input_type: holding
+        scale: 0.1
+        precision: 1
+        unit_of_measurement: A
+        device_class: current
+        state_class: measurement
+      - name: "R4850 température"
+        unique_id: r4850_dc_temperature
+        slave: 11
+        address: 2309
+        input_type: holding
+        scale: 0.1
+        precision: 1
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+      - name: "R4850 courant AC"
+        unique_id: r4850_ac_current
+        slave: 11
+        address: 2314
+        input_type: holding
+        scale: 0.1
+        precision: 1
+        unit_of_measurement: A
+        device_class: current
+        state_class: measurement
+      - name: "R4850 puissance AC"
+        unique_id: r4850_ac_power
+        slave: 11
+        address: 2315
+        input_type: holding
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+      # 2318 : 0 off · 2 défaut (CAN perdu) · 3 bulk · 4 absorption
+      - name: "R4850 état"
+        unique_id: r4850_state
+        slave: 11
+        address: 2318
+        input_type: holding
+      - name: "R4850 code défaut"
+        unique_id: r4850_error_code
+        slave: 11
+        address: 2319
+        input_type: holding
+
+input_select:
+  r4850_mode:
+    name: "R4850 mode"
+    icon: mdi:battery-charging
+    options:
+      - off
+      - compensation
+      - recharge
+
+automation:
+  - id: r4850_apply_mode
+    alias: "R4850 — appliquer le mode au chargeur"
+    description: >-
+      Écrit 0 / 1 / 2 dans le registre Modbus 2317. Le driver interprète
+      0 = arrêt, 1 = dernier mode actif, 2 = recharge ; il ne publie jamais 2,
+      pour que VRM et le GUI ne voient pas une valeur hors norme.
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: input_select.r4850_mode
+    condition:
+      # On n'écrit pas si le GX ne répond pas : une écriture perdue laisserait
+      # HA afficher un mode que le driver n'a jamais reçu.
+      - condition: template
+        value_template: "{{ states('sensor.r4850_state') not in ['unknown', 'unavailable'] }}"
+    action:
+      - action: modbus.write_register
+        data:
+          hub: gx
+          slave: 11
+          address: 2317
+          value: >-
+            {{ {'off': 0, 'compensation': 1, 'recharge': 2}[states('input_select.r4850_mode')] | int }}
+
+  # Divergence possible : quelqu'un coupe le chargeur depuis le GUI ou VRM
+  # (/Mode = 0) alors que HA affiche encore « recharge ». Ce bloc réaligne
+  # l'input_select sur l'état réel. À activer si tu utilises le GUI.
+  # - id: r4850_sync_mode_from_gx
+  #   alias: "R4850 — réaligner le mode HA sur le GX"
+  #   mode: single
+  #   trigger:
+  #     - platform: numeric_state
+  #       entity_id: sensor.r4850_state
+  #       below: 1
+  #       for: "00:00:10"
+  #   action:
+  #     - action: input_select.select_option
+  #       target:
+  #         entity_id: input_select.r4850_mode
+  #       data:
+  #         option: off
