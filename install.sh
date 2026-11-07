@@ -89,7 +89,9 @@ EOF
 fi
 
 say "== Démarrage"
-run "svc -u '$SERVICE_DIR' || true"
+# svc -u only starts a stopped service: after an update the running process would
+# keep the old code. -t restarts it whether it is up or down.
+run "svc -t '$SERVICE_DIR' || svc -u '$SERVICE_DIR' || true"
 run "sleep 2; svstat '$SERVICE_DIR' || true"
 
 say ""
