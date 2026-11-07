@@ -1,172 +1,139 @@
 #!/usr/bin/env python3
+"""Huawei R4850G2 bench utility — talk to one module from a terminal.
+
+Same codec and same transport as the D-Bus driver, so what you see here is
+exactly what the service will see.  No python-can: AF_CAN only.
+
+    ./r4850.py can1 --info                 dump the info registers (serial, nominal)
+    ./r4850.py can1 --monitor 30           print telemetry for 30 s
+    ./r4850.py can1 --voltage 53.5 --current 10
+    ./r4850.py can1 --standby              inhibit the output
+    ./r4850.py can1 --on                   re-enable the output
+
+Values are volatile: the module forgets them ~60 s after the last frame, which
+is why --monitor and the driver keep transmitting at 1 Hz.
+"""
+
 import argparse
-import struct
-import socket
-import fcntl
-import os
-import time
-import threading
 import logging
-import can
+import sys
+import time
+from pathlib import Path
 
-logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-MAX_CURRENT = 50
+import r4850_can as codec
+from r4850_transport import CanTransport
 
-# Register addresses
-R48xx_DATA_INPUT_POWER = 0x70
-R48xx_DATA_INPUT_FREQ = 0x71
-R48xx_DATA_INPUT_CURRENT = 0x72
-R48xx_DATA_OUTPUT_POWER = 0x73
-R48xx_DATA_EFFICIENCY = 0x74
-R48xx_DATA_OUTPUT_VOLTAGE = 0x75
-R48xx_DATA_OUTPUT_CURRENT_MAX_PERCENT = 0x76
-R48xx_DATA_INPUT_VOLTAGE = 0x78
-R48xx_DATA_OUTPUT_TEMPERATURE = 0x7F
-R48xx_DATA_INPUT_TEMPERATURE = 0x80
-R48xx_DATA_OUTPUT_CURRENT = 0x81
-R48xx_DATA_OUTPUT_CURRENT1 = 0x82
-
-class RectifierParameters:
-    def __init__(self):
-        self.input_voltage = 0.0
-        self.input_frequency = 0.0
-        self.input_current = 0.0
-        self.input_power = 0.0
-        self.input_temp = 0.0
-        self.efficiency = 0.0
-        self.output_voltage = 0.0
-        self.output_current = 0.0
-        self.max_output_current_percent = 0.0
-        self.output_power = 0.0
-        self.output_temp = 0.0
-        self.amp_hour = 0.0
-
-    def print_parameters(self):
-        print("\n")
-        print(f"Input Voltage {self.input_voltage:.2f}V @ {self.input_frequency:.2f}Hz")
-        print(f"Input Current {self.input_current:.2f}A")
-        print(f"Input Power {self.input_power:.2f}W\n")
-        print(f"Output Voltage {self.output_voltage:.2f}V")
-        print(f"Output Current {self.output_current:.2f}A of {self.max_output_current_percent * MAX_CURRENT:.2f}A Max ({self.max_output_current_percent * 100:.1f}% of Capacity), {self.amp_hour / 3600:.3f}Ah")
-        print(f"Output Power {self.output_power:.2f}W\n")
-        print(f"Input Temperature {self.input_temp:.1f} DegC")
-        print(f"Output Temperature {self.output_temp:.1f} DegC")
-        print(f"Efficiency {self.efficiency * 100:.1f}%")
-
-def bswap32(val):
-    return struct.unpack('>I', struct.pack('<I', val))[0]
-
-def bswap16(val):
-    return struct.unpack('>H', struct.pack('<H', val))[0]
-
-def parse_data(frame, rp):
-    value = bswap32(struct.unpack('<I', bytes(frame.data[4:8]))[0]) / 1024.0
-    reg = frame.data[1]
-
-    if reg == R48xx_DATA_INPUT_POWER:
-        rp.input_power = value
-    elif reg == R48xx_DATA_INPUT_FREQ:
-        rp.input_frequency = value
-    elif reg == R48xx_DATA_INPUT_CURRENT:
-        rp.input_current = value
-    elif reg == R48xx_DATA_OUTPUT_POWER:
-        rp.output_power = value
-    elif reg == R48xx_DATA_EFFICIENCY:
-        rp.efficiency = value
-    elif reg == R48xx_DATA_OUTPUT_VOLTAGE:
-        rp.output_voltage = value
-    elif reg == R48xx_DATA_OUTPUT_CURRENT_MAX_PERCENT:
-        rp.max_output_current_percent = value
-    elif reg == R48xx_DATA_INPUT_VOLTAGE:
-        rp.input_voltage = value
-    elif reg == R48xx_DATA_OUTPUT_TEMPERATURE:
-        rp.output_temp = value
-    elif reg == R48xx_DATA_INPUT_TEMPERATURE:
-        rp.input_temp = value
-    elif reg == R48xx_DATA_OUTPUT_CURRENT:
-        rp.output_current = value
-        rp.print_parameters()
+LOG = logging.getLogger("r4850.cli")
 
 
-def parse_ack(frame):
-    error = frame.data[0] & 0x20
-    value = bswap32(struct.unpack('<I', bytes(frame.data[4:8]))[0]) / 1024.0
-    cmd = frame.data[1]
+def dump_info(transport, seconds=6.0):
+    transport.request_info()
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if transport.state.serial and transport.state.nominal_current:
+            break
+        time.sleep(0.25)
+    state = transport.state
+    print(f"numéro de série   : {state.serial or 'aucune réponse'}")
+    if state.nominal_current:
+        print(f"courant nominal   : {state.nominal_current:.1f} A")
+        print(f"limite absolue    : {codec.ratio_to_amps(codec.CURRENT_RATIO_MAX, state.nominal_current):.1f} A (122 %)")
+    print(f"firmware          : {state.firmware or '?'}")
+    return 0 if state.serial else 1
 
-    if cmd == 0x00:
-        print(f"{'Error' if error else 'Success'} setting on-line voltage to {value:.2f}V")
-    elif cmd == 0x01:
-        print(f"{'Error' if error else 'Success'} setting non-volatile (off-line) voltage to {value:.2f}V")
-    elif cmd == 0x03:
-        print(f"{'Error' if error else 'Success'} setting on-line current to {value * MAX_CURRENT:.2f}A ({value * 100:.1f}% of Capacity)")
-    elif cmd == 0x04:
-        print(f"{'Error' if error else 'Success'} setting non-volatile (off-line) current to {value * MAX_CURRENT:.2f}A ({value * 100:.1f}% of Capacity)")
-    else:
-        print(f"{'Error' if error else 'Success'} setting unknown parameter (0x{cmd:02X})")
 
-def request_data(bus):
-    msg = can.Message(arbitration_id=0x108040FE, is_extended_id=True, data=[0]*8)
-    bus.send(msg)
+def monitor(transport, seconds):
+    print(f"{'t':>5}  {'Udc':>7}  {'Idc':>6}  {'Pdc':>7}  {'Uac':>6}  {'Tout':>5}  {'Tin':>5}  {'η':>5}")
+    started = time.monotonic()
+    while time.monotonic() - started < seconds:
+        transport.request_data()
+        time.sleep(1.0)
+        st = transport.state
+        if st.output_voltage is None:
+            print(f"{time.monotonic() - started:5.0f}  aucune réponse du module")
+            continue
+        print(
+            f"{time.monotonic() - started:5.0f}  {st.output_voltage:7.2f}  {st.output_current_fast or 0:6.2f}  "
+            f"{st.output_power or 0:7.1f}  {st.input_voltage or 0:6.1f}  {st.output_temperature or 0:5.1f}  "
+            f"{st.input_temperature or 0:5.1f}  {(st.efficiency or 0) * 100:4.1f}%"
+        )
+    return 0
 
-def set_voltage(bus, voltage, nonvolatile):
-    val = int(voltage * 1024)
-    cmd = 0x01 if nonvolatile else 0x00
-    data = [0x01, cmd, 0x00, 0x00, 0x00, 0x00, (val >> 8) & 0xFF, val & 0xFF]
-    msg = can.Message(arbitration_id=0x108180FE, is_extended_id=True, data=data)
-    bus.send(msg)
 
-def set_current(bus, current, nonvolatile):
-    val = int((current / MAX_CURRENT) * 1024)
-    cmd = 0x04 if nonvolatile else 0x03
-    data = [0x01, cmd, 0x00, 0x00, 0x00, 0x00, (val >> 8) & 0xFF, val & 0xFF]
-    msg = can.Message(arbitration_id=0x108180FE, is_extended_id=True, data=data)
-    bus.send(msg)
+def apply_setpoints(args, transport):
+    if not transport.state.nominal_current:
+        transport.request_info()
+        deadline = time.monotonic() + 5.0
+        while not transport.state.nominal_current and time.monotonic() < deadline:
+            time.sleep(0.25)
+    if not transport.state.nominal_current:
+        print("courant nominal inconnu : le module ne répond pas à l'info 0x0001", file=sys.stderr)
+        return 1
+    address = args.address
+    if args.voltage is not None:
+        transport.send(*codec.build_set_voltage(args.voltage, address))
+        print(f"tension -> {args.voltage:.2f} V")
+    if args.current is not None:
+        transport.send(
+            *codec.build_set_current_limit(args.current, transport.state.nominal_current, address)
+        )
+        print(f"courant -> {args.current:.2f} A (nominal {transport.state.nominal_current:.1f} A)")
+    if args.standby:
+        transport.send(*codec.build_set_standby(True, address))
+        print("sortie -> standby")
+    elif args.on:
+        transport.send(*codec.build_set_standby(False, address))
+        print("sortie -> active")
+    if args.fan_max:
+        transport.send(*codec.build_set_fan_mode(True, address))
+        print("ventilateur -> vitesse max")
+    return 0
+
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Huawei R4850G2 CAN Configuration Utility',
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    parser.add_argument('interface', help='CAN interface (e.g. can0)')
-    parser.add_argument('-v', '--voltage', type=float, help='Set output voltage')
-    parser.add_argument('-c', '--current', type=float, help='Set output current')
-    parser.add_argument('-s', '--save', action='store_true', help='Save settings to non-volatile memory')
-    parser.add_argument('-h', '--help', action='help', help='Show this help message and exit')
-
+    parser = argparse.ArgumentParser(description="Huawei R4850G2 bench utility")
+    parser.add_argument("interface", nargs="?", default="can1", help="SocketCAN interface")
+    parser.add_argument("--address", type=int, default=1)
+    parser.add_argument("-v", "--voltage", type=float, help="set output voltage (V)")
+    parser.add_argument("-c", "--current", type=float, help="set current limit (A)")
+    parser.add_argument("--standby", action="store_true", help="inhibit the output")
+    parser.add_argument("--on", action="store_true", help="enable the output")
+    parser.add_argument("--fan-max", action="store_true", help="force fan to max speed")
+    parser.add_argument("--info", action="store_true", help="dump the info registers")
+    parser.add_argument("--monitor", type=float, metavar="SECONDS", help="print telemetry")
+    parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
-    
-    rp = RectifierParameters()
-    
-    bus = can.interface.Bus(channel=args.interface, bustype='socketcan')
 
-    if args.voltage:
-        set_voltage(bus, args.voltage, False)
-        if args.save:
-            set_voltage(bus, args.voltage, True)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.WARNING,
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    )
 
-    if args.current:
-        set_current(bus, args.current, False)
-        if args.save:
-            set_current(bus, args.current, True)
+    transport = CanTransport(args.interface, args.address)
+    try:
+        transport.open()
+    except OSError as exc:
+        print(f"interface {args.interface} inutilisable : {exc}", file=sys.stderr)
+        return 2
 
-    def periodic():
-        while True:
-            request_data(bus)
-            time.sleep(1)
+    try:
+        actions = [args.voltage is not None, args.current is not None, args.standby,
+                   args.on, args.fan_max, args.info, args.monitor is not None]
+        if not any(actions):
+            transport.request_data()
+            time.sleep(1.5)
+            monitor(transport, 5)
+            return 0
+        if args.info:
+            return dump_info(transport)
+        if args.monitor is not None:
+            return monitor(transport, args.monitor)
+        return apply_setpoints(args, transport)
+    finally:
+        transport.close()
 
-    threading.Thread(target=periodic, daemon=True).start()
 
-    for msg in bus:
-        can_id = msg.arbitration_id & 0x1FFFFFFF
-        if can_id == 0x1081407F:
-            parse_data(msg, rp)
-        elif can_id == 0x1081807E:
-            parse_ack(msg)
-        elif can_id == 0x1081D27F:
-            print(bytes(msg.data[2:8]).decode('ascii', errors='ignore'))
-        else:
-            print(f"Unknown frame 0x{can_id:03X} [{msg.dlc}]", ' '.join(f"{b:02X}" for b in msg.data))
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    sys.exit(main())

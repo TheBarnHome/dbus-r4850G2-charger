@@ -122,8 +122,9 @@ Non-negotiable, enforced in code and asserted in tests:
 No dependency beyond the standard library, runnable anywhere:
 
 ```sh
-python3 tests/test_can.py        # 21 tests, anchored on frames captured from real units
-python3 tests/test_regulator.py  # 15 tests, plant model + fail-safe paths
+python3 tests/test_r4850_can.py    # 21 tests, anchored on frames from real units
+python3 tests/test_r4850_modes.py  # 15 tests, plant model + fail-safe paths
+./run-tests.sh                     # both, and this is what runs on the GX
 ```
 
 The codec tests use the exact frames published in the protocol documentation
@@ -139,33 +140,95 @@ mismatch, not as a plausibility check.
 |---|---|
 | CAN codec + tests | done, verified against documented frames |
 | Mode policy + tests | done, behaviour measured on the plant model |
-| D-Bus service | not written |
-| SocketCAN transport + watchdog | not written |
-| `install.sh` / runit service / update path | not written |
-| On-target validation | not started (no hardware attached yet) |
+| SocketCAN transport (AF_CAN, no python-can) | done |
+| D-Bus `com.victronenergy.charger` service | done |
+| Control loop, watchdog, standby on shutdown | done |
+| MQTT bridge + Home Assistant discovery | done |
+| Bench CLI (`r4850.py --info/--monitor/--standby`) | done |
+| `install.sh` + runit service + can1 take-over | written, not run |
+| On-target validation | code and tests run on the GX; no module wired yet |
 
-### Open questions before the I/O layer
+Measured on the target (Venus OS v3.70, Python 3.12.12): compiles, 36 unit
+tests pass, and `--self-test` runs the control loop closed on a simulated
+plant (compensation converges, recharge saturates at CCL). What is *not*
+validated: anything that needs the rectifier on the wire.
 
-1. **CAN interface** — measured on the target, 2026-11-07: both CAN ports are
-   `mcp251x` channels of the same SPI HAT. `can0` runs at **500 kbit/s** for the
-   JK-BMS (`can-bus-bms.can0`, 33 990 frames received, 0 errors), `can1` runs at
-   **250 kbit/s** for VE.Can and has moved **zero frames** in either direction.
-   The R4850G2 is fixed at **125 kbit/s**, so it cannot share `can0`: one bus,
-   one bitrate, and the BMS link carries CVL/CCL — the last link to expose to a
-   3 kW rectifier. Two ways out:
-   - **dedicated USB adapter** (candleLight / gs_usb, module present in the
-     Venus OS kernel) → `can2` at 125 kbit/s, zero coupling, ~20 EUR;
-   - **reuse `can1`** at 125 kbit/s if VE.Can is definitively unused, which
-     costs the VE.Can capability and needs the driver to alarm on bus-off (the
-     profile lives in `/data/conf/settings.xml`, a firmware update can revert it).
-2. **Mode selection**: D-Bus `/Mode` written by Home Assistant or Node-RED,
-   a switch in the Venus GUI, or an external policy (energy-planner)? The
-   driver exposes the path either way; who decides changes the interface.
-3. **Output contactor**: is the rectifier permanently wired to the bus? The
-   output capacitors are large and will spark on connection to a live battery;
-   standby keeps the DC/DC off but does not isolate it.
-4. **R4850G2 vs R4850G6**: fan duty cycle and AC input current limit are absent
-   on the G2, and the fan is driven by the *input* temperature, which lets the
-   module run above 80 °C at full power. Fan mode `max` (register `0x0134`) is
-   the only lever on the G2, and this driver sets it whenever the current
-   setpoint is above 50 %.
+## D-Bus
+
+``com.victronenergy.charger.huawei-r4850g2.<serial>`` — the AC charger type,
+which is what the Venus GUI and VRM already know how to display.
+
+| Path | Meaning |
+|---|---|
+| `/Dc/0/Voltage`, `/Dc/0/Current`, `/Dc/0/Power` | rectifier **output**, from CAN telemetry (`0x0175`, `0x0181`, `0x0173`) |
+| `/Dc/0/Temperature` | module output temperature (`0x017F`) |
+| `/Ac/In/0/L1/V`, `/I`, `/P` | rectifier **input** (`0x0178`, `0x0172`, `0x0170`) |
+| `/State` | 0 off, 2 fault (CAN lost), 3 bulk, 4 absorption |
+| `/Mode` (w) | 1 on / 4 off — the plain switch GUI and VRM already draw |
+| `/Settings/ChargeMode` (w) | 0 off, 1 compensation, 2 recharge — the real policy |
+| `/Settings/MaxCurrent` (w) | current ceiling in A |
+| `/Settings/CompensationDelta` (w) | voltage offset used in compensation |
+| `/Link/ChargeVoltage`, `/Link/ChargeCurrent` | the BMS CVL/CCL actually used |
+| `/Link/BatteryVoltage`, `/Link/BatteryCurrent` | the BMS values behind the loop |
+| `/Diagnostics/Setpoint/*`, `/Diagnostics/Reason` | what the policy decided, in plain text |
+| `/Diagnostics/Can/*` | frames, acks, refused writes, age of the last frame |
+| `/Alarms/HighVoltage`, `/Alarms/HighTemperature` | derived from telemetry |
+
+`/Mode` and `/Settings/ChargeMode` are deliberately separate: the standard
+switch must stay a switch, the three-way policy needs its own path, and both
+stay consistent (turning `/Mode` off stores the last active mode and turning it
+back on restores it).
+
+## Home Assistant
+
+The GX publishes nothing usable to a home broker on its own: the only bridge on
+this system is `dbus-mqtt-integrations`, which speaks VRM — measured, **one**
+topic in 12 s (`N/88a29e057cde/system/0/Serial`). So the driver carries a small
+MQTT bridge (paho-mqtt, already installed on the GX).
+
+| Entity | Type | Topics under `homeassistant/r4850/<serial>/` |
+|---|---|---|
+| `select.…_mode` | off / compensation / recharge | `mode`, `mode/set` |
+| `number.…_max_current` | 0-60 A | `max_current`, `max_current/set` |
+| `number.…_compensation_delta` | 0.1-2.0 V | `compensation_delta`, `compensation_delta/set` |
+| 9 sensors | output V/A/W, input W, in/out temperature, battery current, setpoints | one topic each |
+
+Availability is an MQTT last-will on `…/availability`, so an unreachable GX
+shows as *unavailable* in HA instead of silently freezing on the last value.
+Broker and prefix are CLI options (`--mqtt-host`, default `192.168.10.100`,
+`--mqtt-prefix`, default `homeassistant`); `--no-mqtt` disables the bridge, and
+an unreachable broker never stops the charger.
+
+## Installation
+
+`can1` is taken over: `vecan-dbus.can1` is stopped and the interface is
+reconfigured to **125 kbit/s** by [`r4850-can-up.sh`](r4850-can-up.sh), which
+the runit service calls at every start. The CAN profile in Venus OS cannot
+express 125 kbit/s (options are 250/500 kbit/s only), which is why this is not
+done through Settings.
+
+```sh
+sh install.sh --dry-run   # prints the plan
+sh install.sh             # installs and starts
+```
+
+What it does: checks `dbus`, `gi` and `paho.mqtt.client`, initialises the
+`velib_python` submodule, fast-forwards the checkout, brings `can1` to
+125 kbit/s, writes `/service/r4850-charger/run`, starts the service. State
+(`/data/etc/dbus-r4850-state/settings.json`) and logs (`/var/log/dbus-r4850/`)
+live outside the checkout. A firmware update restores the stock `/service`
+tree; re-run the script afterwards.
+
+## Still open
+
+1. **Output contactor**: is the rectifier permanently wired to the bus? The
+   output capacitors are large and will spark when connected to a live battery;
+   standby disables the DC/DC stage but does not isolate the output.
+2. **Venus GUI page for the three modes**: `/Mode` gives an on/off switch in the
+   GUI and VRM for free. A page with the three-way selector needs a gui-v2
+   plugin, as `dbus-mpp-p18` does; the plan is to copy that structure once the
+   CAN side is proven.
+3. **R4850G2 vs R4850G6**: fan duty cycle and AC input current limit are absent
+   on the G2, whose fan follows the *input* temperature and lets the module run
+   above 80 °C at full power. Fan mode `max` (`0x0134`) is the only lever, and
+   the driver sets it above half the current ceiling.
