@@ -15,7 +15,6 @@ STATE_DIR="${STATE_DIR:-/data/etc/dbus-r4850-state}"
 SERVICE_DIR="/service/r4850-charger"
 LOGDIR="/var/log/dbus-r4850"
 CAN_IFACE="${R4850_CAN_IFACE:-can1}"
-MQTT_HOST="${R4850_MQTT_HOST:-192.168.10.100}"
 DEVICE_INSTANCE="${R4850_DEVICE_INSTANCE:-10}"
 DRY_RUN=0
 
@@ -35,7 +34,7 @@ say "== Vérifications"
 [ "$(id -u)" = 0 ] || { echo "à lancer en root" >&2; exit 1; }
 [ -f /etc/venus/swu-name ] || echo "attention: /etc/venus absent, êtes-vous sur Venus OS ?"
 [ -d "$INSTALL_DIR/.git" ] || { echo "dépôt absent de $INSTALL_DIR" >&2; exit 1; }
-for mod in dbus gi paho.mqtt.client; do
+for mod in dbus gi; do
     python3 -c "import $mod" 2>/dev/null && say "  python3 -m $mod : ok" \
         || { echo "  python3 -m $mod : MANQUANT" >&2; exit 1; }
 done
@@ -65,7 +64,7 @@ exec 2>&1
 . /etc/profile.d/profile.sh
 '$INSTALL_DIR/r4850-can-up.sh' || true
 exec python3 '$INSTALL_DIR/dbus-r4850-ac-charger.py' \\
-    --can $CAN_IFACE --device-instance $DEVICE_INSTANCE --mqtt-host $MQTT_HOST
+    --can $CAN_IFACE --device-instance $DEVICE_INSTANCE
 EOF
     chmod +x "$SERVICE_DIR/run"
     say "  $SERVICE_DIR/run créé"

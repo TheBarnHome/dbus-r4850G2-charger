@@ -143,7 +143,7 @@ mismatch, not as a plausibility check.
 | SocketCAN transport (AF_CAN, no python-can) | done |
 | D-Bus `com.victronenergy.charger` service | done |
 | Control loop, watchdog, standby on shutdown | done |
-| MQTT bridge + Home Assistant discovery | done |
+| Home Assistant over Modbus TCP (native register map) | done, no MQTT |
 | Bench CLI (`r4850.py --info/--monitor/--standby`) | done |
 | `install.sh` + runit service + can1 take-over | written, not run |
 | On-target validation | code and tests run on the GX; no module wired yet |
@@ -179,25 +179,51 @@ switch must stay a switch, the three-way policy needs its own path, and both
 stay consistent (turning `/Mode` off stores the last active mode and turning it
 back on restores it).
 
-## Home Assistant
+## Home Assistant — Modbus TCP, no MQTT
 
-The GX publishes nothing usable to a home broker on its own: the only bridge on
-this system is `dbus-mqtt-integrations`, which speaks VRM — measured, **one**
-topic in 12 s (`N/88a29e057cde/system/0/Serial`). So the driver carries a small
-MQTT bridge (paho-mqtt, already installed on the GX).
+Two measurements decided this, both taken on the GX:
 
-| Entity | Type | Topics under `homeassistant/r4850/<serial>/` |
-|---|---|---|
-| `select.…_mode` | off / compensation / recharge | `mode`, `mode/set` |
-| `number.…_max_current` | 0-60 A | `max_current`, `max_current/set` |
-| `number.…_compensation_delta` | 0.1-2.0 V | `compensation_delta`, `compensation_delta/set` |
-| 9 sensors | output V/A/W, input W, in/out temperature, battery current, setpoints | one topic each |
+1. **The GX cannot reach a home broker.** From the GX, `192.168.10.100:1883`
+   is unreachable — VLAN 20 routes outbound to the internet, not to the LAN
+   (the UDM "Block Inter VLAN Internal" policy). A bridge from the GX to EMQX
+   would need a firewall hole before a single message flows.
+2. **Home Assistant already polls the GX on port 502.** `netstat` shows an
+   established session `10.10.10.10 → 192.168.20.245:502`, and
+   `com.victronenergy.charger` **is in the Modbus register map**
+   (`/opt/victronenergy/dbus-modbustcp/attributes.csv`, registers 2307-2322).
 
-Availability is an MQTT last-will on `…/availability`, so an unreachable GX
-shows as *unavailable* in HA instead of silently freezing on the last value.
-Broker and prefix are CLI options (`--mqtt-host`, default `192.168.10.100`,
-`--mqtt-prefix`, default `homeassistant`); `--no-mqtt` disables the bridge, and
-an unreachable broker never stops the charger.
+So the charger shows up in the polling that already exists, with no new
+infrastructure, no broker, no firewall change.
+
+| Register | Path | R/W | Note |
+|---|---|---|---|
+| 2307 | `/Dc/0/Voltage` | R | uint16, /100 |
+| 2308 | `/Dc/0/Current` | R | int16, /10 |
+| 2309 | `/Dc/0/Temperature` | R | int16, /10 |
+| 2310-2313 | `/Dc/1`, `/Dc/2` | R | unused here (single output) |
+| 2314 | `/Ac/In/L1/I` | R | int16, /10 |
+| 2315 | `/Ac/In/L1/P` | R | uint16, W |
+| 2316 | `/Ac/In/CurrentLimit` | **W** | AC ceiling, turned into a DC cap |
+| 2317 | `/Mode` | **W** | 0 off, 1 on, **2 recharge** (private) |
+| 2318 | `/State` | R | 0 off, 2 fault, 3 bulk, 4 absorption |
+| 2319 | `/ErrorCode` | R | |
+| 2321/2322 | `/Alarms/LowVoltage`, `/HighVoltage` | R | |
+
+Only **two** registers are writable for this service type, which is why the
+three-way mode rides on `/Mode`: Home Assistant writes `0` (off), `1` (restore
+the last active mode) or `2` (recharge). The official map calls `2` an error
+value; the driver accepts it on write and **never publishes it** — it only ever
+sends `0` or `1`, so no Victron client can see an out-of-spec value.
+
+`/Ac/In/CurrentLimit` is implemented honestly instead of repurposed: the
+R4850G2 has no AC current limit register (that is a G6 feature), so the value is
+converted into a DC ceiling, `I_dc = I_ac × 230 V × 0.93 / V_battery`, and
+applied as the regulator's maximum. That gives Home Assistant a real power
+throttle without inventing a register.
+
+The MQTT bridge that lived here up to commit `98007bd` was removed: it could not
+reach a broker from VLAN 20 and duplicated a path that already exists. `git show
+98007bd` if it is ever wanted behind a firewall hole.
 
 ## Installation
 

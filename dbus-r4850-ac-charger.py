@@ -10,12 +10,12 @@ and current.  Three modes, one control loop at 1 Hz.
     recharge      full rectifier power up to the BMS CVL
 
 Everything that can hurt the battery lives in ``r4850_modes`` (pure, tested).
-This file is the I/O shell: SocketCAN, D-Bus, files, MQTT, the clock.
+This file is the I/O shell: SocketCAN, D-Bus, files, the clock.
 
 Usage
 -----
     ./dbus-r4850-ac-charger.py --can can1 --device-instance 10
-    ./dbus-r4850-ac-charger.py --self-test 10 --no-mqtt   # headless, no D-Bus
+    ./dbus-r4850-ac-charger.py --self-test 10              # headless, no D-Bus
 """
 
 from __future__ import annotations
@@ -45,9 +45,18 @@ STATE_FAULT = 2
 STATE_BULK = 3
 STATE_ABSORPTION = 4
 
-# Victron /Mode values (the plain on/off switch, not our three modes).
+# /Mode on com.victronenergy.charger is 0 = off, 1 = on (2 = error in the
+# official register map; we never publish it).  Accepting 2 as a *write* is a
+# private extension so Home Assistant can reach the third mode through Modbus,
+# which only exposes /Mode and /Ac/In/CurrentLimit as writable for this type.
+VE_MODE_OFF = 0
 VE_MODE_ON = 1
-VE_MODE_OFF = 4
+VE_MODE_RECHARGE = 2
+
+# Rectifier efficiency and assumed AC voltage, used to turn the AC current limit
+# (the only other writable register for this service type) into a DC ceiling.
+AC_NOMINAL_V = 230.0
+AC_EFFICIENCY = 0.93
 
 CAN_STALE_S = 5.0
 BATTERY_STALE_S = 12.0
@@ -156,159 +165,6 @@ class BatteryMonitor:
         return float("inf") if not self.last_ok else time.monotonic() - self.last_ok
 
 
-# ---------------------------------------------------------------------------
-# MQTT: Home Assistant discovery + commands
-# ---------------------------------------------------------------------------
-
-
-class MqttBridge:
-    """Minimal HA bridge: discovery, state, availability, command topics.
-
-    The GX publishes nothing usable to a home broker on its own — the only
-    bridge on this system is ``dbus-mqtt-integrations``, which speaks VRM, not
-    Home Assistant discovery (measured: one topic in 12 s).  So the driver
-    carries its own bridge.  An unreachable broker must never stop the charger,
-    hence the guarded constructor at the call site.
-    """
-
-    def __init__(self, host, port, prefix, node, name, on_command) -> None:
-        import paho.mqtt.client as mqtt
-
-        self.prefix = prefix.strip("/")
-        self.node = node
-        self.name = name
-        self.on_command = on_command
-        self.online = False
-        self.root = f"{self.prefix}/r4850/{node}"
-        api = getattr(mqtt, "CallbackAPIVersion", None)
-        self.client = (
-            mqtt.Client(api.VERSION2, f"r4850-{node}") if api else mqtt.Client(f"r4850-{node}")
-        )
-        self.client.on_connect = self._on_connect
-        self.client.on_message = self._on_message
-        self.client.will_set(f"{self.root}/availability", "offline", retain=True)
-        self.client.connect(host, port, 30)
-        self.client.loop_start()
-        log.info("MQTT %s:%d, racine %s", host, port, self.root)
-
-    # -- topics -----------------------------------------------------------
-
-    def topic(self, suffix: str) -> str:
-        return f"{self.root}/{suffix}"
-
-    def _on_connect(self, client, userdata, flags, rc, properties=None) -> None:
-        failed = getattr(rc, "is_failure", None)
-        if failed is True or (failed is None and isinstance(rc, int) and rc != 0):
-            log.error("MQTT refusé: %s", rc)
-            return
-        self.online = True
-        client.publish(f"{self.root}/availability", "online", retain=True)
-        for suffix in ("mode/set", "max_current/set", "compensation_delta/set"):
-            client.subscribe(self.topic(suffix))
-        for topic, payload in self._discovery():
-            client.publish(topic, json.dumps(payload), retain=True)
-        log.info("MQTT prêt, discovery publiée")
-
-    def _on_message(self, client, userdata, msg) -> None:
-        suffix = msg.topic[len(self.root) + 1 :]
-        try:
-            payload = msg.payload.decode().strip()
-        except UnicodeDecodeError:
-            return
-        try:
-            self.on_command(suffix, payload)
-        except Exception:  # noqa: BLE001
-            log.exception("commande MQTT %s=%s refusée", suffix, payload)
-
-    # -- discovery --------------------------------------------------------
-
-    def _device(self) -> dict:
-        return {
-            "identifiers": [f"r4850_{self.node}"],
-            "name": self.name,
-            "manufacturer": "Huawei",
-            "model": "R4850G2",
-        }
-
-    def _discovery(self):
-        device = self._device()
-        avail = f"{self.root}/availability"
-        base = dict(device=device, availability_topic=avail)
-
-        yield (
-            f"homeassistant/select/r4850_{self.node}/mode/config",
-            dict(
-                name="Mode",
-                command_topic=self.topic("mode/set"),
-                state_topic=self.topic("mode"),
-                options=["off", "compensation", "recharge"],
-                icon="mdi:battery-charging",
-                unique_id=f"r4850_{self.node}_mode",
-                **base,
-            ),
-        )
-        for key, name, unit, dev_class, low, high, step in (
-            ("max_current", "Courant maximum", "A", "current", 0, 60, 0.5),
-            ("compensation_delta", "Delta de compensation", "V", "voltage", 0.1, 2.0, 0.1),
-        ):
-            yield (
-                f"homeassistant/number/r4850_{self.node}/{key}/config",
-                dict(
-                    name=name,
-                    command_topic=self.topic(f"{key}/set"),
-                    state_topic=self.topic(key),
-                    min=low,
-                    max=high,
-                    step=step,
-                    unit_of_measurement=unit,
-                    device_class=dev_class,
-                    unique_id=f"r4850_{self.node}_{key}",
-                    **base,
-                ),
-            )
-        sensors = (
-            ("dc_voltage", "Tension sortie", "V", "voltage"),
-            ("dc_current", "Courant sortie", "A", "current"),
-            ("dc_power", "Puissance sortie", "W", "power"),
-            ("ac_power", "Puissance secteur", "W", "power"),
-            ("output_temperature", "Température sortie", "°C", "temperature"),
-            ("input_temperature", "Température entrée", "°C", "temperature"),
-            ("battery_current", "Courant batterie", "A", "current"),
-            ("setpoint_current", "Consigne courant", "A", "current"),
-            ("setpoint_voltage", "Consigne tension", "V", "voltage"),
-        )
-        for key, name, unit, dev_class in sensors:
-            yield (
-                f"homeassistant/sensor/r4850_{self.node}/{key}/config",
-                dict(
-                    name=name,
-                    state_topic=self.topic(key),
-                    unit_of_measurement=unit,
-                    device_class=dev_class,
-                    state_class="measurement",
-                    unique_id=f"r4850_{self.node}_{key}",
-                    **base,
-                ),
-            )
-
-    # -- publish ----------------------------------------------------------
-
-    def publish(self, **values) -> None:
-        if not self.online:
-            return
-        for key, value in values.items():
-            if value is None:
-                continue
-            self.client.publish(
-                self.topic(key), f"{value:.2f}" if isinstance(value, float) else str(value)
-            )
-
-    def stop(self) -> None:
-        if self.online:
-            self.client.publish(f"{self.root}/availability", "offline", retain=True)
-        self.client.loop_stop()
-        self.client.disconnect()
-
 
 # ---------------------------------------------------------------------------
 # The service
@@ -325,9 +181,9 @@ class R4850Service:
                 "last_active_mode": MODE_COMPENSATION,
                 "max_current": 50.0,
                 "compensation_delta": 0.5,
+                "ac_current_limit": 16.0,
             },
         )
-        self.mqtt = None
         self.transport = None
         self.regulator = None
         self.battery = None
@@ -408,7 +264,12 @@ class R4850Service:
             "/Diagnostics/Can/Age",
         ):
             svc.add_path(path, None)
-        svc.add_path("/Ac/In/CurrentLimit", 16.0)
+        svc.add_path(
+            "/Ac/In/CurrentLimit",
+            float(self.settings.values["ac_current_limit"]),
+            writeable=True,
+            onchangecallback=self.on_ac_current_limit,
+        )
         svc.add_path("/Ac/In/CurrentLimitIsAdjustable", 0)
         svc.add_path("/State", STATE_OFF)
         svc.add_path("/ErrorCode", 0)
@@ -477,33 +338,40 @@ class R4850Service:
         return True
 
     def on_ve_mode(self, _path, value):
-        if int(value) == VE_MODE_OFF:
-            self._store_mode(MODE_OFF)
-            self.service["/Settings/ChargeMode"] = MODE_OFF
-            return True
-        saved = int(self.settings.values.get("last_active_mode", MODE_COMPENSATION))
-        restore = saved if saved != MODE_OFF else MODE_COMPENSATION
-        self._store_mode(restore)
-        self.service["/Settings/ChargeMode"] = restore
+        """0 = off, 1 = on (last active mode), 2 = recharge.  See VE_MODE_*."""
+        request = int(value)
+        if request == VE_MODE_OFF:
+            mode = MODE_OFF
+        elif request == VE_MODE_RECHARGE:
+            mode = MODE_RECHARGE
+        else:
+            saved = int(self.settings.values.get("last_active_mode", MODE_COMPENSATION))
+            mode = saved if saved != MODE_OFF else MODE_COMPENSATION
+        self._store_mode(mode)
+        self.service["/Settings/ChargeMode"] = mode
         return True
 
-    def on_mqtt_command(self, suffix: str, payload: str) -> None:
-        if suffix == "mode/set":
-            mapping = {"off": MODE_OFF, "compensation": MODE_COMPENSATION, "recharge": MODE_RECHARGE}
-            mode = mapping.get(payload.lower())
-            if mode is None:
-                log.warning("mode MQTT inconnu: %r", payload)
-                return
-            if self.on_charge_mode(None, mode):
-                self.service["/Settings/ChargeMode"] = mode
-        elif suffix == "max_current/set":
-            amps = float(payload)
-            if self.on_max_current(None, amps):
-                self.service["/Settings/MaxCurrent"] = amps
-        elif suffix == "compensation_delta/set":
-            volts = float(payload)
-            if self.on_compensation_delta(None, volts):
-                self.service["/Settings/CompensationDelta"] = volts
+    def on_ac_current_limit(self, _path, value):
+        """AC input ceiling, the only other writable register for this type.
+
+        The R4850G2 has no AC current limit register (that is G6 only), so we
+        emulate it: the ceiling is turned into a DC current cap in _dc_ceiling().
+        """
+        amps = float(value)
+        if not 0.0 <= amps <= 63.0:
+            return False
+        self.settings.values["ac_current_limit"] = amps
+        self.settings.save()
+        return True
+
+    def _dc_ceiling(self, battery_voltage: float | None) -> float:
+        """DC amps allowed by the AC ceiling, bounded by the configured maximum."""
+        configured = float(self.settings.values["max_current"])
+        ac_limit = float(self.settings.values.get("ac_current_limit", 0.0))
+        if ac_limit <= 0.0 or not battery_voltage:
+            return configured
+        dc = ac_limit * AC_NOMINAL_V * AC_EFFICIENCY / max(battery_voltage, 40.0)
+        return min(configured, dc)
 
     # -- control loop -----------------------------------------------------
 
@@ -561,6 +429,7 @@ class R4850Service:
 
         if can_ok:
             mode = self.Mode(int(self.settings.values["mode"]))
+            self.regulator.config.max_current_a = self._dc_ceiling(battery.voltage)
             setpoints = self.regulator.step(mode, battery, now, battery_age_s=self._battery_age())
             self.apply_to_module(setpoints)
         else:
@@ -614,40 +483,8 @@ class R4850Service:
                 bool(state.output_temperature and state.output_temperature > 75.0)
             )
 
-        if self.mqtt:
-            self.mqtt.publish(
-                mode={0: "off", 1: "compensation", 2: "recharge"}[int(setpoints.mode)],
-                max_current=round(self.regulator.config.max_current_a, 1),
-                compensation_delta=round(self.regulator.config.compensation_delta_v, 2),
-                dc_voltage=state.output_voltage,
-                dc_current=state.output_current_fast,
-                dc_power=state.output_power,
-                ac_power=state.input_power,
-                output_temperature=state.output_temperature,
-                input_temperature=state.input_temperature,
-                battery_current=battery.current,
-                setpoint_current=setpoints.current_limit,
-                setpoint_voltage=setpoints.voltage,
-            )
 
     # -- lifecycle --------------------------------------------------------
-
-    def start_mqtt(self) -> None:
-        if self.args.no_mqtt:
-            return
-        node = self.transport.state.serial or self.args.can
-        try:
-            self.mqtt = MqttBridge(
-                self.args.mqtt_host,
-                self.args.mqtt_port,
-                self.args.mqtt_prefix,
-                node,
-                f"Huawei R4850G2 ({self.args.can})",
-                self.on_mqtt_command,
-            )
-        except Exception:  # noqa: BLE001 - an unreachable broker must not stop the charger
-            log.exception("MQTT indisponible, le service continue sans Home Assistant")
-            self.mqtt = None
 
     def run(self) -> int:
         self.load_modules()
@@ -661,7 +498,6 @@ class R4850Service:
         DBusGMainLoop(set_as_default=True)
         self.battery = BatteryMonitor(self.args.battery_service)
         self.create_service()
-        self.start_mqtt()
         self.mainloop = GLib.MainLoop()
 
         def refresh_battery():
@@ -686,7 +522,7 @@ class R4850Service:
             return True
 
     def run_self_test(self) -> int:
-        """Headless: fake transport, real policy, no D-Bus, no MQTT, no CAN write."""
+        """Headless: fake transport, real policy, no D-Bus, no CAN write."""
         load = 12.0  # constant DC load the rectifier must carry in compensation
         current = -load
         print(
@@ -723,8 +559,6 @@ class R4850Service:
                 log.info("module mis en standby")
         except Exception:  # noqa: BLE001
             log.exception("standby de sortie impossible")
-        if self.mqtt:
-            self.mqtt.stop()
         if self.transport:
             self.transport.close()
 
@@ -738,10 +572,6 @@ def main() -> int:
     parser.add_argument("--settings-file", default=str(DEFAULT_CONFIG))
     parser.add_argument("--dry-run", action="store_true", help="fake CAN transport")
     parser.add_argument("--self-test", type=int, metavar="N", help="run N ticks headless and print them")
-    parser.add_argument("--no-mqtt", action="store_true")
-    parser.add_argument("--mqtt-host", default="192.168.10.100")
-    parser.add_argument("--mqtt-port", type=int, default=1883)
-    parser.add_argument("--mqtt-prefix", default="homeassistant")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
