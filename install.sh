@@ -78,7 +78,8 @@ exec 2>&1
 . /etc/profile.d/profile.sh
 '$INSTALL_DIR/r4850-can-up.sh' || true
 exec python3 '$INSTALL_DIR/dbus-r4850-ac-charger.py' \\
-    --can $CAN_IFACE --device-instance $RUN_INSTANCE$TEST_FLAG
+    --can $CAN_IFACE --device-instance $RUN_INSTANCE$TEST_FLAG \\
+    >> '$LOGDIR/current' 2>&1
 EOF
     chmod +x "$SERVICE_DIR/run"
     say "  $SERVICE_DIR/run créé"
