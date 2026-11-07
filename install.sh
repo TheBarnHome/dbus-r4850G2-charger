@@ -56,7 +56,10 @@ fi
 
 say "== Mise à jour du code"
 run "cd '$INSTALL_DIR' && git fetch --quiet && git merge --ff-only --quiet @{u}"
-run "chmod +x '$INSTALL_DIR'/dbus-r4850-ac-charger.py '$INSTALL_DIR'/r4850.py '$INSTALL_DIR'/r4850-can-up.sh"
+# Only the shell scripts are executed directly; the .py files are launched as
+# "python3 file.py". chmod'ing tracked files would dirty the tree and block the
+# git merge above on the next run - that is how this line used to break updates.
+run "chmod +x '$INSTALL_DIR'/r4850-can-up.sh"
 run "mkdir -p '$STATE_DIR' '$LOGDIR'"
 
 if [ "$TEST_MODE" = 1 ]; then
