@@ -197,6 +197,7 @@ class R4850Service:
         self.last_can_tx = 0.0
         self.last_info_tx = 0.0
         self.last_apply = 0.0
+        self.sim_battery_current = -float(args.test_load or 0.0)
         self.last_values: dict = {}
 
     # -- setup ------------------------------------------------------------
@@ -298,6 +299,9 @@ class R4850Service:
         svc.add_path("/Diagnostics/Can/Frames", 0)
         svc.add_path("/Diagnostics/Can/SetAcks", 0)
         svc.add_path("/Diagnostics/Can/SetErrors", 0)
+        if self.args.test_load is not None:
+            svc.add_path("/Diagnostics/Test/SimulatedBatteryCurrent", None)
+            svc.add_path("/Diagnostics/Test/Load", float(self.args.test_load))
 
         # Control surface.  /Mode is the switch the Venus GUI and VRM already
         # know how to draw; /Settings/ChargeMode is the three-way policy.
@@ -357,17 +361,23 @@ class R4850Service:
         return True
 
     def on_ve_mode(self, _path, value):
-        """0 = off, 1 = on (last active mode), 2 = recharge.  See VE_MODE_*."""
+        """0 = off, 1 = compensation, 2 = recharge.
+
+        The three values are the three modes, so the write path is a direct
+        mapping and nothing is unreachable. The old design mapped 1 to "restore
+        the last active mode", which made compensation impossible to select from
+        Modbus once the last active mode was recharge - found by trying it.
+        /Mode is published as the real mode for the same reason: a 0/1 view
+        would swallow the second write.
+        """
         request = int(value)
-        if request == VE_MODE_OFF:
-            mode = MODE_OFF
-        elif request == VE_MODE_RECHARGE:
-            mode = MODE_RECHARGE
-        else:
-            saved = int(self.settings.values.get("last_active_mode", MODE_COMPENSATION))
-            mode = saved if saved != MODE_OFF else MODE_COMPENSATION
-        self._store_mode(mode)
-        self.service["/Settings/ChargeMode"] = mode
+        if request == 4:  # solarcharger convention, still written by some clients
+            request = MODE_OFF
+        if request not in (MODE_OFF, MODE_COMPENSATION, MODE_RECHARGE):
+            log.warning("mode %s inconnu, refusé", value)
+            return False
+        self._store_mode(request)
+        self.service["/Settings/ChargeMode"] = request
         return True
 
     def on_ac_current_limit(self, _path, value):
@@ -389,8 +399,8 @@ class R4850Service:
         ac_limit = float(self.settings.values.get("ac_current_limit", 0.0))
         if ac_limit <= 0.0 or not battery_voltage:
             return configured
-        dc = ac_limit * AC_NOMINAL_V * AC_EFFICIENCY / max(battery_voltage, 40.0)
-        return min(configured, dc)
+        ceiling = ac_limit * AC_NOMINAL_V * AC_EFFICIENCY / max(battery_voltage, 40.0)
+        return min(configured, ceiling)
 
     # -- control loop -----------------------------------------------------
 
@@ -445,6 +455,12 @@ class R4850Service:
             self.last_info_tx = now
 
         values = self.battery.read() if self.battery else {}
+        if self.args.test_load is not None:
+            # Simulated plant: the battery absorbs whatever the setpoints do not
+            # consume, so the PI has something to converge on. Voltage, CVL and
+            # CCL stay the real ones, only the measured current is virtual.
+            values = dict(values)
+            values["current"] = self.sim_battery_current
         battery = self.BatteryState(
             voltage=values.get("voltage"),
             current=values.get("current"),
@@ -463,6 +479,9 @@ class R4850Service:
         else:
             setpoints = self.regulator.step(self.Mode.OFF, battery, now)
 
+        if self.args.test_load is not None:
+            drawn = 0.0 if setpoints.standby else setpoints.current_limit
+            self.sim_battery_current = drawn - float(self.args.test_load)
         self._publish(state, battery, setpoints, can_ok, can_age)
         return True
 
@@ -496,7 +515,10 @@ class R4850Service:
             "/Ac/In/0/L1/I": state.input_current,
             "/Ac/In/0/L1/P": state.input_power,
             "/State": victron_state,
-            "/Mode": VE_MODE_OFF if setpoints.mode == self.Mode.OFF else VE_MODE_ON,
+            # Publish the actual mode, not a 0/1 view: a two-state register can
+            # never carry a three-state command, since writing the value it
+            # already holds fires no onchangecallback at all.
+            "/Mode": int(setpoints.mode),
             "/ErrorCode": 0 if can_ok else 1,
             "/Link/ChargeVoltage": battery.charge_voltage_limit,
             "/Link/ChargeCurrent": battery.charge_current_limit,
@@ -511,6 +533,9 @@ class R4850Service:
             "/Diagnostics/Can/SetAcks": state.set_acks,
             "/Diagnostics/Can/SetErrors": state.set_errors,
         }
+        if self.args.test_load is not None:
+            values["/Diagnostics/Test/SimulatedBatteryCurrent"] = round(self.sim_battery_current, 2)
+            values["/Diagnostics/Test/Load"] = float(self.args.test_load)
         with self.service as svc:
             for path, value in values.items():
                 if self.args.test and path in measured:
@@ -617,6 +642,13 @@ def main() -> int:
         "--test",
         action="store_true",
         help="virtual module: answers commands, publishes no voltage/current, writes no CAN",
+    )
+    parser.add_argument(
+        "--test-load",
+        type=float,
+        metavar="A",
+        help="with --test: simulated DC load, closes the loop on a virtual battery "
+        "(battery current = setpoint - load). Real CVL/CCL are still used.",
     )
     parser.add_argument("--self-test", type=int, metavar="N", help="run N ticks headless and print them")
     parser.add_argument("-v", "--verbose", action="store_true")

@@ -12,7 +12,7 @@
 # 1 = marche. La table Modbus du type `charger` ne décrit que ce registre-là et
 # le 2316 ; le mode à trois états n'a pas de registre propre. C'est donc HA qui
 # le tient, et le driver reçoit 0 / 1 / 2 :
-#   0 -> off (registre standby du module), 1 -> dernier mode actif, 2 -> recharge
+#   0 -> off (registre standby du module), 1 -> compensation, 2 -> recharge
 # On ne publie jamais 2 dans /Mode : aucun client Victron ne voit de valeur hors
 # norme, et VRM n'affiche pas de faux état d'erreur.
 
@@ -115,8 +115,8 @@ automation:
     alias: "R4850 — appliquer le mode au chargeur"
     description: >-
       Écrit 0 / 1 / 2 dans le registre Modbus 2317. Le driver interprète
-      0 = arrêt, 1 = dernier mode actif, 2 = recharge ; il ne publie jamais 2,
-      pour que VRM et le GUI ne voient pas une valeur hors norme.
+      0 = arrêt, 1 = compensation, 2 = recharge ; il ne publie jamais 2, pour
+      que VRM et le GUI ne voient pas une valeur hors norme.
     mode: single
     trigger:
       - platform: state
