@@ -210,10 +210,14 @@ infrastructure, no broker, no firewall change.
 | 2321/2322 | `/Alarms/LowVoltage`, `/HighVoltage` | R | |
 
 Only **two** registers are writable for this service type, which is why the
-three-way mode rides on `/Mode`: Home Assistant writes `0` (off), `1` (restore
-the last active mode) or `2` (recharge). The official map calls `2` an error
-value; the driver accepts it on write and **never publishes it** — it only ever
-sends `0` or `1`, so no Victron client can see an out-of-spec value.
+three-way mode rides on `/Mode`: `0` off, `1` compensation, `2` recharge.
+
+The driver publishes the real mode, including `2`, which the Victron register
+map labels "Error". That is deliberate and measured: a writeable D-Bus path
+fires its callback only when the value changes, so a `/Mode` published as a
+0/1 view silently swallowed the command (writing `1` while it already read `1`
+did nothing). Verified on 2026-11-07 with `/Mode = 2`: no error in the Remote
+Console, none on VRM.
 
 `/Ac/In/CurrentLimit` is implemented honestly instead of repurposed: the
 R4850G2 has no AC current limit register (that is a G6 feature), so the value is

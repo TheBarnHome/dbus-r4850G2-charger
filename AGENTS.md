@@ -62,6 +62,14 @@ and current limit, and flashes the yellow LED. Consequences: transmit at 1 Hz
 even in `off`, and never infer the module state from a cached setpoint — read
 the telemetry back.
 
+### A writeable D-Bus path only fires on change
+
+`onchangecallback` is not called when a client writes the value the path already
+holds. A two-state register can therefore never carry a three-state command: the
+second write is dropped in silence, with no error anywhere. Either publish the
+full domain of the value (this driver publishes `/Mode` as 0/1/2) or have the
+caller force a transition through a different value first.
+
 ### The module may not be there when the service starts
 
 The info request (command `0x50`) is what yields the serial and the nominal

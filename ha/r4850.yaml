@@ -13,8 +13,12 @@
 # le 2316 ; le mode à trois états n'a pas de registre propre. C'est donc HA qui
 # le tient, et le driver reçoit 0 / 1 / 2 :
 #   0 -> off (registre standby du module), 1 -> compensation, 2 -> recharge
-# On ne publie jamais 2 dans /Mode : aucun client Victron ne voit de valeur hors
-# norme, et VRM n'affiche pas de faux état d'erreur.
+#
+# Le driver *publie* le mode réel dans /Mode, y compris 2. Ce n'est pas
+# contournable : un chemin D-Bus inscriptible ne déclenche son callback que si
+# la valeur change, donc un /Mode publié en 0/1 avalait silencieusement l'ordre.
+# Vérifié le 2026-11-07 : /Mode = 2 n'affiche ni erreur dans le Remote Console
+# ni sur VRM, malgré la table Modbus qui décrit 2 comme « Error ».
 
 modbus:
   - name: gx
