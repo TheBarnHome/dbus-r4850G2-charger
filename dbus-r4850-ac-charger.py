@@ -299,6 +299,7 @@ class R4850Service:
         svc.add_path("/Diagnostics/Can/Frames", 0)
         svc.add_path("/Diagnostics/Can/SetAcks", 0)
         svc.add_path("/Diagnostics/Can/SetErrors", 0)
+        svc.add_path("/Diagnostics/Can/Errors", 0)
         if self.args.test_load is not None:
             svc.add_path("/Diagnostics/Test/SimulatedBatteryCurrent", None)
             svc.add_path("/Diagnostics/Test/Load", float(self.args.test_load))
@@ -532,6 +533,7 @@ class R4850Service:
             "/Diagnostics/Can/Age": round(can_age, 1) if can_ok else None,
             "/Diagnostics/Can/SetAcks": state.set_acks,
             "/Diagnostics/Can/SetErrors": state.set_errors,
+            "/Diagnostics/Can/Errors": state.errors,
         }
         if self.args.test_load is not None:
             values["/Diagnostics/Test/SimulatedBatteryCurrent"] = round(self.sim_battery_current, 2)

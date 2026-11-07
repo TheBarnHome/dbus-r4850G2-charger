@@ -77,6 +77,7 @@ class CanTransport:
         self._reader: threading.Thread | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
+        self._last_tx_error_log = 0.0
 
     # -- lifecycle --------------------------------------------------------
 
@@ -111,9 +112,17 @@ class CanTransport:
             self._sock.send(frame)
             return True
         except OSError as exc:
+            # A single-node bus has no one to acknowledge, so the controller
+            # goes error-passive and the socket returns ENOBUFS for every frame.
+            # Count it, but do not write a line per second: that is noise, not
+            # information - the counter and /Connected already say it.
             with self._lock:
                 self.state.errors += 1
-            LOG.warning("envoi CAN impossible: %s", exc)
+                errors = self.state.errors
+            now = time.monotonic()
+            if now - self._last_tx_error_log >= 60.0:
+                self._last_tx_error_log = now
+                LOG.warning("envoi CAN impossible (%d cumulées): %s", errors, exc)
             return False
 
     def request_data(self) -> None:
