@@ -564,6 +564,21 @@ class R4850Service:
 
         DBusGMainLoop(set_as_default=True)
         self.battery = BatteryMonitor(self.args.battery_service)
+        # The serial is part of the service name and cannot be changed once the
+        # service is registered. A module that powers up with the GX answers
+        # within a few seconds, so wait a little before falling back to
+        # "unknown" - otherwise the device stays named .unknown until restart.
+        deadline = time.monotonic() + float(self.args.serial_wait)
+        while self.transport.state.serial is None and time.monotonic() < deadline:
+            self.transport.request_info()
+            time.sleep(1.0)
+        if self.transport.state.serial:
+            log.info("module détecté, série %s", self.transport.state.serial)
+        else:
+            log.warning(
+                "aucun module après %.0f s : service enregistré sous '.unknown'",
+                self.args.serial_wait,
+            )
         self.create_service()
         self.mainloop = GLib.MainLoop()
 
@@ -635,6 +650,14 @@ def main() -> int:
     parser.add_argument("--can", default="can1", help="SocketCAN interface (default: can1)")
     parser.add_argument("--address", type=int, default=1, help="module software address")
     parser.add_argument("--device-instance", type=int, default=10)
+    parser.add_argument(
+        "--serial-wait",
+        type=float,
+        default=20.0,
+        metavar="S",
+        help="seconds to wait for the module serial before registering anyway "
+        "(the serial is part of the service name and cannot change afterwards)",
+    )
     parser.add_argument("--battery-service", default=None, help="override the BMS service name")
     parser.add_argument("--settings-file", default=str(DEFAULT_CONFIG))
     parser.add_argument("--dry-run", action="store_true", help="fake CAN transport")
