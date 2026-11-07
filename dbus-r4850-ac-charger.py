@@ -60,6 +60,12 @@ AC_EFFICIENCY = 0.93
 
 CAN_STALE_S = 5.0
 BATTERY_STALE_S = 12.0
+# The module falls back to its persistent defaults after ~60 s without traffic,
+# so the cached setpoints stop being true. Re-send everything well before that.
+REWRITE_EVERY_S = 30.0
+# Until the module answers, ask for its info again at this interval. It may be
+# powered up long after the service started, or swapped.
+INFO_RETRY_S = 5.0
 MAX_CURRENT_CEILING = 60.0
 
 log = logging.getLogger("r4850")
@@ -188,8 +194,9 @@ class R4850Service:
         self.regulator = None
         self.battery = None
         self.last_can_tx = 0.0
+        self.last_info_tx = 0.0
+        self.last_apply = 0.0
         self.last_values: dict = {}
-        self.info_deadline = time.monotonic() + 15.0
 
     # -- setup ------------------------------------------------------------
 
@@ -375,7 +382,7 @@ class R4850Service:
 
     # -- control loop -----------------------------------------------------
 
-    def apply_to_module(self, setpoints) -> None:
+    def apply_to_module(self, setpoints, now: float | None = None) -> None:
         from r4850_can import (
             build_set_current_limit,
             build_set_fan_mode,
@@ -387,6 +394,14 @@ class R4850Service:
         if not state.nominal_current:
             log.warning("courant nominal inconnu (info 0x0001), setpoints retenus")
             return
+        if now is None:
+            now = time.monotonic()
+        if now - self.last_apply > REWRITE_EVERY_S:
+            # Cached values are no longer guaranteed to be what the module holds.
+            if self.last_values:
+                log.info("réécriture complète des consignes (>%.0f s)", REWRITE_EVERY_S)
+            self.last_values = {}
+        self.last_apply = now
         last = self.last_values
         if last.get("standby") != setpoints.standby:
             self.transport.send(*build_set_standby(setpoints.standby, self.args.address))
@@ -413,8 +428,9 @@ class R4850Service:
         if now - self.last_can_tx >= 0.5:
             self.transport.request_data()
             self.last_can_tx = now
-        if self.transport.state.serial is None and now < self.info_deadline:
+        if self.transport.state.serial is None and now - self.last_info_tx >= INFO_RETRY_S:
             self.transport.request_info()
+            self.last_info_tx = now
 
         values = self.battery.read() if self.battery else {}
         battery = self.BatteryState(
@@ -431,7 +447,7 @@ class R4850Service:
             mode = self.Mode(int(self.settings.values["mode"]))
             self.regulator.config.max_current_a = self._dc_ceiling(battery.voltage)
             setpoints = self.regulator.step(mode, battery, now, battery_age_s=self._battery_age())
-            self.apply_to_module(setpoints)
+            self.apply_to_module(setpoints, now)
         else:
             setpoints = self.regulator.step(self.Mode.OFF, battery, now)
 

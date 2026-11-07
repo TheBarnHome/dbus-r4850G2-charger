@@ -62,6 +62,23 @@ and current limit, and flashes the yellow LED. Consequences: transmit at 1 Hz
 even in `off`, and never infer the module state from a cached setpoint — read
 the telemetry back.
 
+### The module may not be there when the service starts
+
+The info request (command `0x50`) is what yields the serial and the nominal
+current, and the service cannot register without the serial. Powering the
+rectifier up after the driver, or swapping a module, is the normal case: the
+request has to be re-sent every few seconds until the module answers, not fired
+once at start-up. `INFO_RETRY_S` exists for that reason.
+
+### The setpoint cache lies after a CAN outage
+
+`apply_to_module()` only writes values that changed, which is what keeps the
+bus quiet. But the module falls back to its persistent defaults after ~60 s of
+silence, so after an outage the cache says "already applied" while the module
+holds something else — and the driver would never rewrite it. Every setpoint is
+therefore rewritten unconditionally after `REWRITE_EVERY_S` (30 s), and the
+cache is dropped on recovery.
+
 ### The persistent defaults are a trap, not a convenience
 
 `0x0100`/`0x0103` are volatile and die with the online session. `0x0101`/`0x0104`
