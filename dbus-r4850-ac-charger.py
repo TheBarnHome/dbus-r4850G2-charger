@@ -491,7 +491,7 @@ class R4850Service:
 
     def _publish(self, state, battery, setpoints, can_ok, can_age) -> None:
         if not can_ok:
-            victron_state = STATE_FAULT
+            victron_state = STATE_OFF
         elif setpoints.mode != self.Mode.OFF:
             victron_state = STATE_ABSORPTION if setpoints.standby or setpoints.current_limit <= 0.5 else STATE_BULK
         else:
@@ -520,7 +520,10 @@ class R4850Service:
             # never carry a three-state command, since writing the value it
             # already holds fires no onchangecallback at all.
             "/Mode": int(setpoints.mode),
-            "/ErrorCode": 0 if can_ok else 1,
+            # Never repurpose /ErrorCode: for a Victron charger, 1 means
+            # "Battery temperature too high". A missing module is not a device
+            # error, it is an absent device: /Connected carries that.
+            "/ErrorCode": 0,
             "/Link/ChargeVoltage": battery.charge_voltage_limit,
             "/Link/ChargeCurrent": battery.charge_current_limit,
             "/Link/BatteryVoltage": battery.voltage,

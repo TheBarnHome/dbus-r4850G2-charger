@@ -62,6 +62,14 @@ and current limit, and flashes the yellow LED. Consequences: transmit at 1 Hz
 even in `off`, and never infer the module state from a cached setpoint — read
 the telemetry back.
 
+### `/ErrorCode` belongs to the device, not to the driver
+
+The Victron charger error list is specific: `1` is "Battery temperature too
+high", `2` "Battery voltage too high", and so on. The first version published
+`1` to signal "no module on the CAN", and the GUI and VRM reported a battery
+over-temperature on a bus with nothing connected. An absent device is
+`/Connected = 0` and `/State = 0`, with the reason in `/Diagnostics/Reason`.
+
 ### A writeable D-Bus path only fires on change
 
 `onchangecallback` is not called when a client writes the value the path already
