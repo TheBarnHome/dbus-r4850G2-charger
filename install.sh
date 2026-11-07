@@ -13,12 +13,21 @@ set -eu
 INSTALL_DIR="${INSTALL_DIR:-/data/etc/dbus-r4850G2-charger}"
 STATE_DIR="${STATE_DIR:-/data/etc/dbus-r4850-state}"
 SERVICE_DIR="/service/r4850-charger"
+TEST_SERVICE_DIR="/service/r4850-charger-test"
 LOGDIR="/var/log/dbus-r4850"
 CAN_IFACE="${R4850_CAN_IFACE:-can1}"
 DEVICE_INSTANCE="${R4850_DEVICE_INSTANCE:-10}"
+RUN_INSTANCE="$DEVICE_INSTANCE"
+TEST_FLAG=""
 DRY_RUN=0
 
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+TEST_MODE=0
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=1 ;;
+        --test) TEST_MODE=1; SERVICE_DIR="$TEST_SERVICE_DIR" ;;
+    esac
+done
 
 say() { printf '%s\n' "$*"; }
 run() {
@@ -50,21 +59,26 @@ run "cd '$INSTALL_DIR' && git fetch --quiet && git merge --ff-only --quiet @{u}"
 run "chmod +x '$INSTALL_DIR'/dbus-r4850-ac-charger.py '$INSTALL_DIR'/r4850.py '$INSTALL_DIR'/r4850-can-up.sh"
 run "mkdir -p '$STATE_DIR' '$LOGDIR'"
 
-say "== Interface CAN ($CAN_IFACE à 125 kbit/s)"
-run "'$INSTALL_DIR/r4850-can-up.sh'"
+if [ "$TEST_MODE" = 1 ]; then
+    say "== Mode test : module virtuel, aucune modification de $CAN_IFACE"
+else
+    say "== Interface CAN ($CAN_IFACE à 125 kbit/s)"
+    run "'$INSTALL_DIR/r4850-can-up.sh'"
+fi
 
 say "== Service runit"
 if [ "$DRY_RUN" = 1 ]; then
     say "  [dry-run] créer $SERVICE_DIR/run"
 else
     mkdir -p "$SERVICE_DIR"
+    [ "$TEST_MODE" = 1 ] && { RUN_INSTANCE=$((DEVICE_INSTANCE + 1)); TEST_FLAG=" --test"; }
     cat > "$SERVICE_DIR/run" <<EOF
 #!/bin/sh
 exec 2>&1
 . /etc/profile.d/profile.sh
 '$INSTALL_DIR/r4850-can-up.sh' || true
 exec python3 '$INSTALL_DIR/dbus-r4850-ac-charger.py' \\
-    --can $CAN_IFACE --device-instance $DEVICE_INSTANCE
+    --can $CAN_IFACE --device-instance $RUN_INSTANCE$TEST_FLAG
 EOF
     chmod +x "$SERVICE_DIR/run"
     say "  $SERVICE_DIR/run créé"
@@ -76,7 +90,7 @@ run "sleep 2; svstat '$SERVICE_DIR' || true"
 
 say ""
 say "== Contrôle (à lancer dans 10 s)"
-say "  tail -n 30 $LOGDIR/current"
+say "  tail -n 30 $LOGDIR/current   (ou journalctl/service log du runit)"
 say "  dbus-send --system --dest=com.victronenergy.Bus --print-reply / com.victronenergy.Bus.ListNames | grep r4850"
 say "  ip -details link show $CAN_IFACE | grep bitrate"
 say ""

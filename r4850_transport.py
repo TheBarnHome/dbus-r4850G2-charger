@@ -189,24 +189,39 @@ class CanTransport:
 
 
 class FakeTransport(CanTransport):
-    """No hardware: synthesises plausible frames so the service can be exercised."""
+    """No hardware: acknowledges setpoints and, optionally, invents telemetry.
 
-    def __init__(self, interface: str = "fake", address: int = 1) -> None:
+    ``telemetry=False`` is the test mode: the virtual module answers the
+    commands (acks are counted, the loop runs, the policy decides against the
+    real BMS), but it publishes **no** output voltage, current or temperature.
+    Inventing those numbers would push fake measurements into Venus OS, VRM and
+    Home Assistant history, which is worse than showing nothing.
+    """
+
+    def __init__(self, interface: str = "fake", address: int = 1, telemetry: bool = True) -> None:
         super().__init__(interface=interface, address=address)
+        self.telemetry = telemetry
         self._started = 0.0
         self._injected: list[tuple[float, float]] = []  # (voltage, current) demand
 
     def open(self) -> None:
-        self.state.serial = "fake0000dead"
+        self.state.serial = "test00000000" if not self.telemetry else "fake0000dead"
         self.state.nominal_current = 50.0
-        self.state.firmware = "dry.run"
+        self.state.firmware = "virtual"
         self._started = time.monotonic()
-        LOG.info("transport factice (--dry-run), aucun CAN réel")
+        LOG.info(
+            "module virtuel (%s), aucun CAN réel",
+            "mode test, aucune mesure publiée" if not self.telemetry else "dry-run complet",
+        )
 
     def close(self) -> None:
         pass
 
     def send(self, can_id: int, payload: bytes) -> bool:
+        """A virtual module acknowledges every write, and records it."""
+        with self._lock:
+            self.state.set_acks += 1
+            self.state.last_frame_at = time.monotonic()
         return True
 
     def step(self) -> None:
@@ -219,6 +234,10 @@ class FakeTransport(CanTransport):
             if ts <= elapsed:
                 voltage, demand = v, i
         st = self.state
+        st.last_frame_at = time.monotonic()
+        st.frames += 8
+        if not self.telemetry:
+            return
         st.output_voltage = voltage
         st.output_current_fast = demand
         st.output_current_slow = demand
@@ -231,8 +250,6 @@ class FakeTransport(CanTransport):
         st.input_temperature = 27.0 + demand * 0.2
         st.efficiency = 0.93
         st.alarms = 0
-        st.last_frame_at = time.monotonic()
-        st.frames += 8
 
     def expect(self, voltage: float, current: float) -> None:
         self._injected.append((time.monotonic() - self._started + 1.0, (voltage, current)))

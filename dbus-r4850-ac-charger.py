@@ -16,6 +16,7 @@ Usage
 -----
     ./dbus-r4850-ac-charger.py --can can1 --device-instance 10
     ./dbus-r4850-ac-charger.py --self-test 10              # headless, no D-Bus
+    ./dbus-r4850-ac-charger.py --test                      # virtual module, no measurements
 """
 
 from __future__ import annotations
@@ -216,7 +217,12 @@ class R4850Service:
     def open_transport(self):
         here = str(Path(__file__).resolve().parent)
         sys.path.insert(0, here)
-        if self.args.dry_run or self.args.self_test:
+        if self.args.test:
+            # Virtual module: it acknowledges the setpoints and nothing else.
+            from r4850_transport import FakeTransport
+
+            self.transport = FakeTransport(telemetry=False)
+        elif self.args.dry_run or self.args.self_test:
             from r4850_transport import FakeTransport
 
             self.transport = FakeTransport()
@@ -225,6 +231,12 @@ class R4850Service:
 
             self.transport = CanTransport(self.args.can, self.args.address)
         self.transport.open()
+        if self.args.test:
+            log.warning(
+                "MODE TEST : module virtuel sur %s, aucune mesure de tension/courant "
+                "publiée et aucun setpoint écrit sur le CAN réél",
+                self.args.can,
+            )
         return self.transport
 
     # -- D-Bus service ----------------------------------------------------
@@ -465,6 +477,15 @@ class R4850Service:
         else:
             victron_state = STATE_OFF
 
+        measured = (
+            "/Dc/0/Voltage",
+            "/Dc/0/Current",
+            "/Dc/0/Power",
+            "/Dc/0/Temperature",
+            "/Ac/In/0/L1/V",
+            "/Ac/In/0/L1/I",
+            "/Ac/In/0/L1/P",
+        )
         values = {
             "/Connected": 1 if can_ok else 0,
             "/Dc/0/Voltage": state.output_voltage,
@@ -492,12 +513,17 @@ class R4850Service:
         }
         with self.service as svc:
             for path, value in values.items():
+                if self.args.test and path in measured:
+                    continue
                 if value is not None:
                     svc[path] = value
-            svc["/Alarms/HighVoltage"] = int(bool(state.output_voltage and state.output_voltage > 58.6))
-            svc["/Alarms/HighTemperature"] = int(
-                bool(state.output_temperature and state.output_temperature > 75.0)
-            )
+            if not self.args.test:
+                svc["/Alarms/HighVoltage"] = int(
+                    bool(state.output_voltage and state.output_voltage > 58.6)
+                )
+                svc["/Alarms/HighTemperature"] = int(
+                    bool(state.output_temperature and state.output_temperature > 75.0)
+                )
 
 
     # -- lifecycle --------------------------------------------------------
@@ -587,6 +613,11 @@ def main() -> int:
     parser.add_argument("--battery-service", default=None, help="override the BMS service name")
     parser.add_argument("--settings-file", default=str(DEFAULT_CONFIG))
     parser.add_argument("--dry-run", action="store_true", help="fake CAN transport")
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="virtual module: answers commands, publishes no voltage/current, writes no CAN",
+    )
     parser.add_argument("--self-test", type=int, metavar="N", help="run N ticks headless and print them")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
