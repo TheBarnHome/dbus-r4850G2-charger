@@ -29,6 +29,7 @@ import platform
 import signal
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 VERSION = "v0.2"
@@ -479,6 +480,16 @@ class R4850Service:
             self.apply_to_module(setpoints, now)
         else:
             setpoints = self.regulator.step(self.Mode.OFF, battery, now)
+            # The regulator only knows about the policy; when the bus is silent,
+            # the policy's "mode is off" hides the real cause.
+            setpoints = replace(
+                setpoints,
+                reason=(
+                    f"aucun module sur le CAN (derniere trame il y a {can_age:.0f} s)"
+                    if state.online
+                    else "aucun module sur le CAN"
+                ),
+            )
 
         if self.args.test_load is not None:
             drawn = 0.0 if setpoints.standby else setpoints.current_limit
