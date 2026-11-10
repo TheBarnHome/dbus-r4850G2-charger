@@ -242,7 +242,7 @@ sh install.sh --dry-run   # prints the plan
 sh install.sh             # installs and starts
 ```
 
-What it does: checks `dbus`, `gi` and `paho.mqtt.client`, initialises the
+
 `velib_python` submodule, fast-forwards the checkout, brings `can1` to
 125 kbit/s, writes `/service/r4850-charger/run`, starts the service. State
 (`/data/etc/dbus-r4850-state/settings.json`) and logs (`/var/log/dbus-r4850/`)

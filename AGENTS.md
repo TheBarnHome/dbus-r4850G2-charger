@@ -62,6 +62,18 @@ and current limit, and flashes the yellow LED. Consequences: transmit at 1 Hz
 even in `off`, and never infer the module state from a cached setpoint — read
 the telemetry back.
 
+### `/service` is volatile: the service lives in `/opt`
+
+`/service` is a tmpfs, bind-mounted at boot over a ramdisk copy of
+`/opt/victronenergy/service` (`/etc/init.d/overlays.sh`: `cp -a` then
+`mount --bind`). A service directory written only into `/service` runs until the
+next reboot and then disappears without a word. Write the canonical copy to
+`/opt/victronenergy/service/<name>`, replay the boot path (`rm -rf` the live
+copy, `cp -a` from /opt), and start it. Both copies must be identical.
+
+`/opt` lives on the rootfs, so a Venus OS firmware update wipes it while `/data`
+survives: re-run `install.sh` after an update.
+
 ### `/ErrorCode` belongs to the device, not to the driver
 
 The Victron charger error list is specific: `1` is "Battery temperature too

@@ -12,8 +12,14 @@ set -eu
 
 INSTALL_DIR="${INSTALL_DIR:-/data/etc/dbus-r4850G2-charger}"
 STATE_DIR="${STATE_DIR:-/data/etc/dbus-r4850-state}"
-SERVICE_DIR="/service/r4850-charger"
-TEST_SERVICE_DIR="/service/r4850-charger-test"
+SERVICE_NAME="r4850-charger"
+# /service is a tmpfs, bind-mounted at boot over a ramdisk copy of
+# /opt/victronenergy/service (see /etc/init.d/overlays.sh). Writing only to
+# /service works until the next reboot, then the service vanishes silently.
+# The canonical copy therefore lives in /opt and is replayed into /service the
+# same way the boot path does it: delete, cp -a, start.
+SERVICE_DIR="/opt/victronenergy/service/$SERVICE_NAME"
+LIVE_SERVICE_DIR="/service/$SERVICE_NAME"
 LOGDIR="/var/log/dbus-r4850"
 CAN_IFACE="${R4850_CAN_IFACE:-can1}"
 DEVICE_INSTANCE="${R4850_DEVICE_INSTANCE:-10}"
@@ -25,7 +31,7 @@ TEST_MODE=0
 for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=1 ;;
-        --test) TEST_MODE=1; SERVICE_DIR="$TEST_SERVICE_DIR" ;;
+        --test) TEST_MODE=1; SERVICE_NAME="r4850-charger-test"; SERVICE_DIR="/opt/victronenergy/service/$SERVICE_NAME"; LIVE_SERVICE_DIR="/service/$SERVICE_NAME" ;;
     esac
 done
 
@@ -71,7 +77,7 @@ fi
 
 say "== Service runit"
 if [ "$DRY_RUN" = 1 ]; then
-    say "  [dry-run] créer $SERVICE_DIR/run"
+    say "  [dry-run] créer $SERVICE_DIR/run puis rejouer le chemin de boot vers $LIVE_SERVICE_DIR"
 else
     mkdir -p "$SERVICE_DIR"
     [ "$TEST_MODE" = 1 ] && { RUN_INSTANCE=$((DEVICE_INSTANCE + 1)); TEST_FLAG=" --test"; }
@@ -85,14 +91,19 @@ exec python3 '$INSTALL_DIR/dbus-r4850-ac-charger.py' \\
     >> '$LOGDIR/current' 2>&1
 EOF
     chmod +x "$SERVICE_DIR/run"
-    say "  $SERVICE_DIR/run créé"
+    say "  $SERVICE_DIR/run créé (persistant)"
+    # Replay the boot path identically, so the live copy is byte-for-byte what
+    # the next boot will produce.
+    rm -rf "$LIVE_SERVICE_DIR"
+    cp -a "$SERVICE_DIR" "$LIVE_SERVICE_DIR"
+    say "  $LIVE_SERVICE_DIR rejoué depuis /opt"
 fi
 
 say "== Démarrage"
 # svc -u only starts a stopped service: after an update the running process would
 # keep the old code. -t restarts it whether it is up or down.
-run "svc -t '$SERVICE_DIR' || svc -u '$SERVICE_DIR' || true"
-run "sleep 2; svstat '$SERVICE_DIR' || true"
+run "svc -t '$LIVE_SERVICE_DIR' || svc -u '$LIVE_SERVICE_DIR' || true"
+run "sleep 2; svstat '$LIVE_SERVICE_DIR' || true"
 
 say ""
 say "== Contrôle (à lancer dans 10 s)"
