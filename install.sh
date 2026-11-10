@@ -93,7 +93,10 @@ EOF
     chmod +x "$SERVICE_DIR/run"
     say "  $SERVICE_DIR/run créé (persistant)"
     # Replay the boot path identically, so the live copy is byte-for-byte what
-    # the next boot will produce.
+    # the next boot will produce. Stop first: deleting the directory of a
+    # running service orphans its process, and runit would then supervise a
+    # directory that no longer exists.
+    svc -d "$LIVE_SERVICE_DIR" 2>/dev/null || true
     rm -rf "$LIVE_SERVICE_DIR"
     cp -a "$SERVICE_DIR" "$LIVE_SERVICE_DIR"
     say "  $LIVE_SERVICE_DIR rejoué depuis /opt"
